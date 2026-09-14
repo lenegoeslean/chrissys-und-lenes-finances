@@ -1,4 +1,4 @@
-const CACHE = 'sparhamster-cache-v2';
+const CACHE = 'sparhamster-cache-v3';
 const ASSETS = [
   './',
   './index.html',
