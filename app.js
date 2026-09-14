@@ -36,16 +36,18 @@ const THEMES = [
   {id:'pfirsich', color:'#e08e5b'},
   {id:'blau', color:'#4f8fc0'},
   {id:'gold', color:'#c8a13a'},
+  {id:'rosa', color:'#dd8fa4'},
 ];
 
 function defaultState(){
   return {
     meta:{appName:'Sparhamster'},
-    ui:{theme:'mint', mode:'auto', tab:'heute', calMonth: ymOf(new Date())},
+    ui:{theme:'mint', mode:'auto', tab:'heute', calMonth: ymOf(new Date()), calView:'month', weekStart: mondayOf(today())},
     categories:{expense: clone(DEFAULT_EXPENSE_CATS), income: clone(DEFAULT_INCOME_CATS)},
     accounts:[],
     transactions:[],
     budgets:{},
+    recurring:[],
     savingsGoal:{name:'Notgroschen', target:null, targetDate:null},
     netWorthGoal:{target:null},
     companion:{bestStreak:0}
@@ -112,6 +114,23 @@ function addMonths(ym, delta){
 function daysInMonth(ym){
   const [y,m] = ym.split('-').map(Number);
   return new Date(y,m,0).getDate();
+}
+function dateFromIso(iso){ const [y,m,d]=iso.split('-').map(Number); return new Date(y,m-1,d); }
+function mondayOf(iso){
+  const dt = dateFromIso(iso);
+  const dow = (dt.getDay()+6)%7; // Monday=0
+  dt.setDate(dt.getDate()-dow);
+  return isoDate(dt);
+}
+function addDays(iso, n){ const dt = dateFromIso(iso); dt.setDate(dt.getDate()+n); return isoDate(dt); }
+function addPeriod(iso, freq){
+  if(freq==='weekly') return addDays(iso, 7);
+  // monthly, clamped to the day count of the target month
+  const [y,m,d] = iso.split('-').map(Number);
+  let ny=y, nm=m+1;
+  if(nm>12){ nm=1; ny++; }
+  const dim = daysInMonth(ny+'-'+pad2(nm));
+  return ny+'-'+pad2(nm)+'-'+pad2(Math.min(d,dim));
 }
 function allCats(){ return state.categories.expense.concat(state.categories.income); }
 function catById(id){ return allCats().find(c=>c.id===id); }
@@ -185,6 +204,29 @@ function computeStreak(){
   if(streak>state.companion.bestStreak){ state.companion.bestStreak = streak; save(); }
   return streak;
 }
+function materializeRecurring(){
+  let changed = false;
+  const todayIso = today();
+  (state.recurring||[]).forEach(r=>{
+    if(!r.active) return;
+    let next = addPeriod(r.lastGenerated, r.freq);
+    let guard = 0;
+    while(next<=todayIso && guard<500){
+      state.transactions.push({
+        id:uid(), _t:Date.now()+guard,
+        type:r.type, catId:r.catId, amount:r.amount,
+        date:next, accountId:r.accountId||null, note:r.note||'',
+        recurringId:r.id
+      });
+      r.lastGenerated = next;
+      changed = true;
+      next = addPeriod(next, r.freq);
+      guard++;
+    }
+  });
+  if(changed) save();
+}
+function nextDueDate(r){ return addPeriod(r.lastGenerated, r.freq); }
 function companionStage(streak){
   if(streak>=60) return 3;
   if(streak>=21) return 2;
@@ -320,7 +362,7 @@ function renderTxList(txs, emptyText, emptyIcon){
     return `<div class="tx-item" data-action="open-tx-edit" data-id="${t.id}">
       <div class="tx-icon" style="background:${c.color}22;">${c.em}</div>
       <div class="tx-main">
-        <div class="tx-cat">${escapeHtml(c.name)}</div>
+        <div class="tx-cat">${escapeHtml(c.name)}${t.recurringId?' <span style="font-size:11px;color:var(--text-faint);">🔁</span>':''}</div>
         <div class="tx-note">${escapeHtml(t.note||'')}${acc?(t.note?' · ':'')+escapeHtml(acc.name):''}</div>
       </div>
       <div class="tx-amount ${t.type}">${t.type==='expense'?'-':'+'}${fmtMoney(t.amount)}</div>
@@ -357,6 +399,21 @@ function txFormHtml(existing, presetDate){
       </select>
     </div>
     <div class="field"><label>Notiz (optional)</label><input name="note" type="text" value="${escapeHtml(note)}" placeholder="z. B. Wocheneinkauf"></div>
+    ${!existing? `
+    <div class="field">
+      <label>Wiederkehrend</label>
+      <div class="toggle-row" data-recurring-toggle>
+        <button type="button" class="active" data-rec="none">Einmalig</button>
+        <button type="button" data-rec="weekly">Wöchentlich</button>
+        <button type="button" data-rec="monthly">Monatlich</button>
+      </div>
+      <input type="hidden" name="recurring" value="none">
+      <small class="hint">Praktisch für Abos oder Gehalt – legt automatisch künftige Buchungen an.</small>
+    </div>` : (existing.recurringId ? `
+    <div class="field" style="background:var(--accent-soft); border-radius:12px; padding:10px 12px;">
+      <small style="color:var(--accent-dark); font-weight:600;">🔁 Teil einer wiederkehrenden Zahlung</small><br>
+      <button type="button" class="btn-secondary" style="margin-top:8px;" data-action="stop-recurring" data-id="${existing.recurringId}">Serie beenden</button>
+    </div>` : '')}
     <button type="submit" class="btn-primary">Speichern</button>
     ${existing?`<button type="button" class="btn-secondary" data-action="delete-tx" data-id="${existing.id}" style="color:var(--danger)">Buchung löschen</button>`:''}
   </form>`;
@@ -367,6 +424,49 @@ function renderCatGrid(type, activeId){
 }
 
 function renderKalender(){
+  const toggle = `<div class="toggle-row" style="margin-bottom:14px;">
+    <button data-action="cal-view" data-view="month" class="${state.ui.calView!=='week'?'active':''}">Monat</button>
+    <button data-action="cal-view" data-view="week" class="${state.ui.calView==='week'?'active':''}">Woche</button>
+  </div>`;
+  return toggle + (state.ui.calView==='week' ? renderWeekView() : renderMonthView());
+}
+function renderWeekView(){
+  const start = state.ui.weekStart;
+  const days = [];
+  for(let i=0;i<7;i++) days.push(addDays(start,i));
+  const todayIso = today();
+  const rows = days.map(iso=>{
+    const txs = txForDay(iso);
+    const inc = sumType(txs,'income'), exp = sumType(txs,'expense');
+    const net = inc-exp;
+    const dow = dateFromIso(iso).toLocaleDateString('de-DE',{weekday:'short'});
+    const highlight = iso===todayIso ? 'background:var(--accent-soft); border-radius:12px;' : '';
+    return `<div class="tx-item" data-action="open-day" data-date="${iso}" style="${highlight}">
+      <div class="tx-icon" style="background:var(--card-2); font-size:12px; font-weight:700;">${dow}</div>
+      <div class="tx-main"><div class="tx-cat">${fmtDateShort(iso)}</div><div class="tx-note">${txs.length} Buchung${txs.length===1?'':'en'}</div></div>
+      <div class="tx-amount ${net>=0?'income':'expense'}">${net>=0?'+':''}${fmtMoneyShort(net)}</div>
+    </div>`;
+  }).join('');
+  const weekTx = days.flatMap(d=>txForDay(d));
+  const wIncome = sumType(weekTx,'income'), wExpense = sumType(weekTx,'expense');
+  return `
+  <div class="card">
+    <div class="cal-header">
+      <button class="cal-nav" data-action="week-prev">‹</button>
+      <h2 style="font-size:15px">${fmtDateShort(days[0])} – ${fmtDateHuman(days[6])}</h2>
+      <button class="cal-nav" data-action="week-next">›</button>
+    </div>
+  </div>
+  <div class="card">${rows}</div>
+  <div class="card">
+    <div class="stat-row">
+      <div class="stat-box income"><div class="val">${fmtMoneyShort(wIncome)}</div><div class="lbl">Einnahmen</div></div>
+      <div class="stat-box expense"><div class="val">${fmtMoneyShort(wExpense)}</div><div class="lbl">Ausgaben</div></div>
+      <div class="stat-box"><div class="val">${fmtMoneyShort(wIncome-wExpense)}</div><div class="lbl">Netto</div></div>
+    </div>
+  </div>`;
+}
+function renderMonthView(){
   const ym = state.ui.calMonth;
   const [y,m] = ym.split('-').map(Number);
   const first = new Date(y,m-1,1);
@@ -451,10 +551,37 @@ function renderBudget(){
     <h2>🎯 ${escapeHtml(sg.name||'Sparziel')}</h2>
     ${sgProgress}${sgProjection}
   </div>
+  <div class="section-title">Wiederkehrende Zahlungen</div>
+  ${renderRecurringList()}
+  <small class="hint" style="margin:6px 4px 16px;">Beim Erfassen einer Buchung als "Wöchentlich"/"Monatlich" markieren, dann taucht sie hier auf.</small>
   <div class="section-title">Monatsbudgets</div>
   <div class="card">${rows}</div>
   <small class="hint" style="margin:6px 4px 0;">Tippe eine Kategorie an, um ein monatliches Limit zu setzen.</small>
   `;
+}
+function renderRecurringList(){
+  const list = (state.recurring||[]).filter(r=>r.active);
+  if(!list.length) return `<div class="card empty-state"><div class="badge">🔁</div><p>Noch keine wiederkehrenden Zahlungen</p></div>`;
+  const rows = list.map(r=>{
+    const c = catById(r.catId) || {em:'❓', name:'?', color:'#aaa'};
+    const freqLabel = r.freq==='weekly' ? 'Wöchentlich' : 'Monatlich';
+    return `<div class="tx-item" data-action="open-recurring-detail" data-id="${r.id}">
+      <div class="tx-icon" style="background:${c.color}22;">${c.em}</div>
+      <div class="tx-main"><div class="tx-cat">${escapeHtml(c.name)}</div><div class="tx-note">${freqLabel} · nächste: ${fmtDateShort(nextDueDate(r))}</div></div>
+      <div class="tx-amount ${r.type}">${r.type==='expense'?'-':'+'}${fmtMoney(r.amount)}</div>
+    </div>`;
+  }).join('');
+  return `<div class="card">${rows}</div>`;
+}
+function recurringDetailHtml(id){
+  const r = state.recurring.find(x=>x.id===id);
+  const c = catById(r.catId) || {em:'❓', name:'?'};
+  return `<div class="modal-handle"></div><div class="modal-title">${c.em} ${escapeHtml(c.name)}</div>
+  <p style="font-size:13.5px; color:var(--text-soft); margin-top:-8px;">
+    ${r.freq==='weekly'?'Wöchentlich':'Monatlich'} · ${fmtMoney(r.amount)} (${r.type==='expense'?'Ausgabe':'Einnahme'})<br>
+    Nächste Buchung: ${fmtDateHuman(nextDueDate(r))}
+  </p>
+  <button class="btn-secondary" style="color:var(--danger)" data-action="stop-recurring" data-id="${r.id}">Serie beenden</button>`;
 }
 function projectGoalDate(target, current){
   // average monthly net (income-expense) over last 3 full months
@@ -696,6 +823,16 @@ function bindDynamic(root){
       bindCatPickers(form);
     });
   });
+  root.querySelectorAll('[data-recurring-toggle]').forEach(group=>{
+    group.querySelectorAll('button').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        group.querySelectorAll('button').forEach(b=>b.classList.remove('active'));
+        btn.classList.add('active');
+        const form = group.closest('form');
+        form.querySelector('[name=recurring]').value = btn.dataset.rec;
+      });
+    });
+  });
   root.querySelectorAll('form[data-form]').forEach(f=>bindCatPickers(f));
   root.querySelectorAll('[data-set-theme]').forEach(el=>el.addEventListener('click', ()=>{ state.ui.theme=el.dataset.setTheme; save(); render(); }));
   root.querySelectorAll('[data-set-mode]').forEach(el=>el.addEventListener('click', ()=>{ state.ui.mode=el.dataset.setMode; save(); render(); }));
@@ -729,7 +866,16 @@ function onAction(e){
   else if(a==='delete-tx'){ state.transactions = state.transactions.filter(t=>t.id!==el.dataset.id); save(); closeModal(); render(); toast('Buchung gelöscht'); }
   else if(a==='cal-prev'){ state.ui.calMonth = addMonths(state.ui.calMonth,-1); render(); }
   else if(a==='cal-next'){ state.ui.calMonth = addMonths(state.ui.calMonth,1); render(); }
+  else if(a==='cal-view'){ state.ui.calView = el.dataset.view; save(); render(); }
+  else if(a==='week-prev'){ state.ui.weekStart = addDays(state.ui.weekStart,-7); render(); }
+  else if(a==='week-next'){ state.ui.weekStart = addDays(state.ui.weekStart,7); render(); }
   else if(a==='open-day'){ openModal(dayModalHtml(el.dataset.date)); }
+  else if(a==='open-recurring-detail'){ openModal(recurringDetailHtml(el.dataset.id)); }
+  else if(a==='stop-recurring'){
+    const r = state.recurring.find(x=>x.id===el.dataset.id);
+    if(r) r.active = false;
+    save(); closeModal(); render(); toast('Serie beendet');
+  }
   else if(a==='open-goal-edit'){ openModal(goalModalHtml()); }
   else if(a==='open-budget-edit'){ openModal(budgetEditModalHtml(el.dataset.cat)); }
   else if(a==='open-acc-new'){ openModal(accNewHtml()); }
@@ -759,7 +905,18 @@ function onTxSubmit(e){
     const t = state.transactions.find(x=>x.id===id);
     Object.assign(t, data);
   } else {
-    state.transactions.push(Object.assign({id:uid(), _t:Date.now()}, data));
+    const newTx = Object.assign({id:uid(), _t:Date.now()}, data);
+    const recFreq = f.recurring ? f.recurring.value : 'none';
+    if(recFreq && recFreq!=='none'){
+      const tmpl = {
+        id:uid(), type:data.type, catId:data.catId, amount:data.amount,
+        note:data.note, accountId:data.accountId, freq:recFreq,
+        lastGenerated:data.date, active:true
+      };
+      state.recurring.push(tmpl);
+      newTx.recurringId = tmpl.id;
+    }
+    state.transactions.push(newTx);
   }
   save(); closeModal(); render(); toast('Gespeichert');
 }
@@ -855,6 +1012,10 @@ function resetData(){
 document.querySelectorAll('.nav-btn').forEach(btn=>{
   btn.addEventListener('click', ()=>{ state.ui.tab = btn.dataset.tab; save(); render(); });
 });
+document.getElementById('netPill').addEventListener('click', ()=>{
+  state.ui.tab = 'vermoegen'; save(); render();
+  if(!state.accounts.length){ openModal(accNewHtml()); }
+});
 if(window.matchMedia){
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', ()=>{ if(state.ui.mode==='auto') render(); });
 }
@@ -866,4 +1027,5 @@ if('serviceWorker' in navigator){
   });
 }
 
+materializeRecurring();
 render();
