@@ -2,14 +2,21 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#f4ede4">
+<meta name="apple-mobile-web-app-title" content="Sparhamster">
+<meta name="theme-color" id="themeColorMeta" content="#f6f4ef">
 <title>Sparhamster</title>
 <link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icon-192.png">
-<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="apple-touch-icon" sizes="152x152" href="icon-152.png">
+<link rel="apple-touch-icon" sizes="167x167" href="icon-167.png">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+<link rel="shortcut icon" href="favicon.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -43,23 +50,27 @@
 [data-theme="gold"][data-mode="dark"]{ --accent:#dcb95c; --accent-dark:#e8cb84; --accent-soft:#352c17; --bg:#1c1a15; }
 [data-theme="rosa"][data-mode="dark"]{ --accent:#ef9fb3; --accent-dark:#f4b7c6; --accent-soft:#3a232a; --bg:#201a1c; }
 
-*{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent; -webkit-touch-callout:none;}
 html,body{margin:0;padding:0;}
+html{ -webkit-text-size-adjust:100%; }
 body{
   font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
   background:var(--bg); color:var(--text);
-  min-height:100vh; padding-bottom:calc(var(--nav-h) + 24px);
+  min-height:100vh; min-height:100dvh;
+  padding-bottom:calc(var(--nav-h) + 24px + env(safe-area-inset-bottom));
+  padding-left:env(safe-area-inset-left); padding-right:env(safe-area-inset-right);
   transition:background .3s ease,color .3s ease;
+  overscroll-behavior-y:none;
 }
 h1,h2,h3{margin:0; font-weight:700;}
-button{font-family:inherit;}
+button{font-family:inherit; touch-action:manipulation;}
 .app{max-width:520px; margin:0 auto; padding:0 16px;}
 
 /* Header */
 .topbar{
   position:sticky; top:0; z-index:20; backdrop-filter:blur(16px);
   background:color-mix(in srgb, var(--bg) 82%, transparent);
-  padding:14px 16px 10px; border-bottom:1px solid var(--border);
+  padding:calc(14px + env(safe-area-inset-top)) 16px 10px; border-bottom:1px solid var(--border);
 }
 .topbar-inner{max-width:520px; margin:0 auto; display:flex; align-items:center; justify-content:space-between;}
 .brand{display:flex; align-items:center; gap:10px;}
@@ -103,8 +114,8 @@ button{font-family:inherit;}
 .field label{display:block; font-size:12.5px; font-weight:600; color:var(--text-soft); margin-bottom:5px;}
 input,select,textarea{
   width:100%; padding:11px 12px; border-radius:12px; border:1.5px solid var(--border);
-  background:var(--card-2); color:var(--text); font-size:15px; font-family:inherit;
-}
+  background:var(--card-2); color:var(--text); font-size:16px; font-family:inherit;
+} /* 16px prevents iOS Safari from auto-zooming the page on focus */
 input:focus,select:focus,textarea:focus{outline:none; border-color:var(--accent);}
 .type-toggle{display:flex; gap:8px; margin-bottom:14px;}
 .type-toggle button{

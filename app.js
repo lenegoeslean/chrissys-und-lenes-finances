@@ -227,6 +227,16 @@ function materializeRecurring(){
   if(changed) save();
 }
 function nextDueDate(r){ return addPeriod(r.lastGenerated, r.freq); }
+function annualAmount(r){ return r.freq==='weekly' ? r.amount*52 : r.amount*12; }
+function annualRecurringTotal(type){
+  return (state.recurring||[]).filter(r=>r.active && r.type===type).reduce((s,r)=>s+annualAmount(r),0);
+}
+function computeFixVsVariable(ym){
+  const txs = txForMonth(ym).filter(t=>t.type==='expense');
+  const fix = txs.filter(t=>t.recurringId).reduce((s,t)=>s+t.amount,0);
+  const total = txs.reduce((s,t)=>s+t.amount,0);
+  return {fix, variable: total-fix, total};
+}
 function companionStage(streak){
   if(streak>=60) return 3;
   if(streak>=21) return 2;
@@ -307,6 +317,11 @@ function applyDarkMode(){
   let mode = state.ui.mode;
   if(mode==='auto') mode = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark':'light';
   document.body.setAttribute('data-mode', mode);
+  requestAnimationFrame(()=>{
+    const bg = getComputedStyle(document.body).getPropertyValue('--bg').trim();
+    const meta = document.getElementById('themeColorMeta');
+    if(bg && meta) meta.setAttribute('content', bg);
+  });
 }
 
 function renderHeute(){
@@ -551,6 +566,7 @@ function renderBudget(){
     <h2>🎯 ${escapeHtml(sg.name||'Sparziel')}</h2>
     ${sgProgress}${sgProjection}
   </div>
+  ${renderFixVariableCard(ym)}
   <div class="section-title">Wiederkehrende Zahlungen</div>
   ${renderRecurringList()}
   <small class="hint" style="margin:6px 4px 16px;">Beim Erfassen einer Buchung als "Wöchentlich"/"Monatlich" markieren, dann taucht sie hier auf.</small>
@@ -559,19 +575,45 @@ function renderBudget(){
   <small class="hint" style="margin:6px 4px 0;">Tippe eine Kategorie an, um ein monatliches Limit zu setzen.</small>
   `;
 }
+function renderFixVariableCard(ym){
+  const fv = computeFixVsVariable(ym);
+  if(fv.total<=0) return '';
+  const fixPct = Math.round(fv.fix/fv.total*100);
+  const income = sumType(txForMonth(ym),'income');
+  const freeAfterFix = income - fv.fix;
+  return `
+  <div class="section-title">Fixkosten vs. Variabel</div>
+  <div class="card">
+    <div class="bar-track" style="display:flex; height:14px; overflow:hidden;">
+      <div style="width:${fixPct}%; background:var(--accent); height:100%;"></div>
+      <div style="width:${100-fixPct}%; background:var(--text-faint); opacity:.45; height:100%;"></div>
+    </div>
+    <div style="display:flex; justify-content:space-between; margin-top:10px; font-size:12.5px; color:var(--text-soft);">
+      <span><span style="display:inline-block;width:9px;height:9px;border-radius:3px;background:var(--accent);margin-right:5px;"></span>Fixkosten: ${fmtMoney(fv.fix)}</span>
+      <span><span style="display:inline-block;width:9px;height:9px;border-radius:3px;background:var(--text-faint);opacity:.6;margin-right:5px;"></span>Variabel: ${fmtMoney(fv.variable)}</span>
+    </div>
+    <small class="hint" style="margin-top:8px;">Fixkosten = diesen Monat gebuchte wiederkehrende Ausgaben (${fixPct}% der Ausgaben).${income>0?` Frei verfügbar nach Fixkosten: ${fmtMoney(freeAfterFix)}.`:''}</small>
+  </div>`;
+}
 function renderRecurringList(){
   const list = (state.recurring||[]).filter(r=>r.active);
   if(!list.length) return `<div class="card empty-state"><div class="badge">🔁</div><p>Noch keine wiederkehrenden Zahlungen</p></div>`;
+  const annualExpense = annualRecurringTotal('expense');
+  const annualIncome = annualRecurringTotal('income');
+  const radar = `<div class="card" style="margin-bottom:10px;">
+    <div class="row-between"><span>🔍 Abo-Radar</span><strong style="color:var(--danger);">${fmtMoney(annualExpense)} / Jahr</strong></div>
+    ${annualIncome>0?`<div class="row-between" style="margin-top:6px; font-size:12.5px; color:var(--text-soft);"><span>Wiederkehrende Einnahmen</span><span>${fmtMoney(annualIncome)} / Jahr</span></div>`:''}
+  </div>`;
   const rows = list.map(r=>{
     const c = catById(r.catId) || {em:'❓', name:'?', color:'#aaa'};
     const freqLabel = r.freq==='weekly' ? 'Wöchentlich' : 'Monatlich';
     return `<div class="tx-item" data-action="open-recurring-detail" data-id="${r.id}">
       <div class="tx-icon" style="background:${c.color}22;">${c.em}</div>
-      <div class="tx-main"><div class="tx-cat">${escapeHtml(c.name)}</div><div class="tx-note">${freqLabel} · nächste: ${fmtDateShort(nextDueDate(r))}</div></div>
+      <div class="tx-main"><div class="tx-cat">${escapeHtml(c.name)}</div><div class="tx-note">${freqLabel} · ≈ ${fmtMoneyShort(annualAmount(r))}/Jahr</div></div>
       <div class="tx-amount ${r.type}">${r.type==='expense'?'-':'+'}${fmtMoney(r.amount)}</div>
     </div>`;
   }).join('');
-  return `<div class="card">${rows}</div>`;
+  return radar + `<div class="card">${rows}</div>`;
 }
 function recurringDetailHtml(id){
   const r = state.recurring.find(x=>x.id===id);
@@ -741,6 +783,9 @@ function renderTrends(){
   const rate = mIncome>0 ? Math.round((mIncome-mExpense)/mIncome*100) : null;
 
   const loggedDays = new Set(state.transactions.map(t=>t.date)).size;
+  const fv = computeFixVsVariable(curYm);
+  const fixShare = fv.total>0 ? Math.round(fv.fix/fv.total*100) : null;
+  const annualExpense = annualRecurringTotal('expense');
 
   return `
   <div class="section-title">Einnahmen vs. Ausgaben (6 Monate)</div>
@@ -759,6 +804,10 @@ function renderTrends(){
       <div class="stat-box"><div class="val">${rate==null?'–':rate+'%'}</div><div class="lbl">Sparquote</div></div>
       <div class="stat-box"><div class="val">${state.companion.bestStreak}</div><div class="lbl">Bester Streak</div></div>
       <div class="stat-box"><div class="val">${loggedDays}</div><div class="lbl">Tage geloggt</div></div>
+    </div>
+    <div class="stat-row" style="margin-top:10px;">
+      <div class="stat-box"><div class="val">${fixShare==null?'–':fixShare+'%'}</div><div class="lbl">Fixkosten-Anteil</div></div>
+      <div class="stat-box"><div class="val">${fmtMoneyShort(annualExpense)}</div><div class="lbl">Abos/Jahr (ca.)</div></div>
     </div>
   </div>`;
 }

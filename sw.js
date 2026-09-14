@@ -1,11 +1,15 @@
-const CACHE = 'sparhamster-cache-v1';
+const CACHE = 'sparhamster-cache-v2';
 const ASSETS = [
   './',
   './index.html',
   './app.js',
   './manifest.json',
   './icon-192.png',
-  './icon-512.png'
+  './icon-512.png',
+  './icon-152.png',
+  './icon-167.png',
+  './apple-touch-icon.png',
+  './favicon.ico'
 ];
 
 self.addEventListener('install', (e) => {
